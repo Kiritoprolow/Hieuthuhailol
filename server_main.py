@@ -1,26 +1,47 @@
 """
 Server FastAPI chay tren Render.
-Nhan anh JPEG tu ESP32, detect mat bang OpenCV Haar Cascade.
+Nhan anh JPEG tu ESP32, gui sang Hugging Face Space (YOLOv8 Face Detection)
+de detect mat chinh xac hon (chiu duoc goc nghieng, anh sang yeu).
 Neu co mat -> ping Telegram + luu lich su (ngay gio phat hien).
 Co trang web /  de xem lich su + anh gan nhat.
 """
 
 import os
+import io
 import time
 import threading
 from datetime import datetime, timezone, timedelta
 
-import cv2
-import numpy as np
 import requests
+from PIL import Image
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
+from gradio_client import Client, handle_file
 
 app = FastAPI()
 
-# ---- Tu ping de chong Render free tier ngu (sleep sau ~15 phut khong traffic) ----
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# ---- Hugging Face Space chay YOLOv8 Face Detection ----
+HF_SPACE_ID = os.environ.get("HF_SPACE_ID", "Kakaytbrr/vuon-sau-rieng-face-detect")
+
+# Khoi tao client 1 lan, dung lai cho moi request (tranh handshake lai moi lan)
+hf_client = None
+hf_client_lock = threading.Lock()
+
+
+def get_hf_client():
+    global hf_client
+    with hf_client_lock:
+        if hf_client is None:
+            hf_client = Client(HF_SPACE_ID)
+    return hf_client
+
+
+# ---- Tu ping de chong Render free tier ngu ----
 SELF_URL = os.environ.get("SELF_URL", "https://hieuthuhailol.onrender.com")
-PING_INTERVAL_SECONDS = 5 * 60  # 5 phut
+PING_INTERVAL_SECONDS = 5 * 60
 
 
 def self_ping_loop():
@@ -35,26 +56,15 @@ def self_ping_loop():
 
 threading.Thread(target=self_ping_loop, daemon=True).start()
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
-
-ALERT_COOLDOWN_SECONDS = 15
-last_alert_time = 0
-
 VN_TZ = timezone(timedelta(hours=7))
 
-# Luu trang thai trong RAM (don gian, du dung cho 1 camera)
 state_lock = threading.Lock()
 state = {
-    "last_image": None,          # bytes anh JPEG gan nhat nhan duoc
-    "last_image_time": None,     # string ngay gio anh gan nhat
-    "last_face_time": None,      # string ngay gio LAN GAN NHAT phat hien mat
-    "total_faces_detected": 0,   # tong so lan phat hien (theo cooldown)
-    "history": [],               # list cac lan phat hien gan day (toi da 50)
+    "last_image": None,
+    "last_image_time": None,
+    "last_face_time": None,
+    "total_faces_detected": 0,
+    "history": [],
 }
 
 MAX_HISTORY = 50
@@ -81,39 +91,46 @@ def send_telegram_alert(jpeg_bytes: bytes, caption: str):
         print(f"Exception khi gui Telegram: {e}")
 
 
+def detect_faces_via_hf(jpeg_bytes: bytes):
+    """
+    Gui anh sang Hugging Face Space (YOLOv8) de detect mat.
+    Tra ve so luong mat phat hien duoc. Neu Space loi/timeout, tra ve 0
+    (khong lam crash request chinh).
+    """
+    try:
+        img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
+        tmp_path = "/tmp/_frame.jpg"
+        img.save(tmp_path, "JPEG")
+
+        client = get_hf_client()
+        result = client.predict(
+            image=handle_file(tmp_path),
+            api_name="/predict",
+        )
+        # result la dict: {"face_count": N, "boxes": [...]}
+        face_count = result.get("face_count", 0) if isinstance(result, dict) else 0
+        return face_count
+    except Exception as e:
+        print(f"Loi goi Hugging Face Space: {e}")
+        return 0
+
+
 @app.post("/upload")
 async def upload_image(request: Request):
-    global last_alert_time
-
     body = await request.body()
     if not body:
         return Response(content="empty body", status_code=400)
 
-    np_arr = np.frombuffer(body, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-    if img is None:
-        return Response(content="invalid image", status_code=400)
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(40, 40),
-    )
-
-    face_count = len(faces)
-    now = time.time()
     now_str = now_vn_string()
 
     with state_lock:
         state["last_image"] = body
         state["last_image_time"] = now_str
 
+    face_count = detect_faces_via_hf(body)
+
     alert_sent = False
-    if face_count > 0 and (now - last_alert_time) > ALERT_COOLDOWN_SECONDS:
-        last_alert_time = now
+    if face_count > 0:
         caption = f"\U0001F6A8 Phat hien {face_count} nguoi trong vuon sau rieng!\n\U0001F550 {now_str}"
         send_telegram_alert(body, caption)
         alert_sent = True
@@ -190,7 +207,7 @@ td{{padding:8px;border-bottom:1px solid rgba(255,255,255,0.1)}}
 <div class="card-title">Lich su phat hien</div>
 <table>{rows}</table>
 </div>
-<div class="footer">Tu dong reload moi 1 giay - bam nut tron de reload tay</div>
+<div class="footer">Tu dong reload moi 1 giay - bam nut tron de reload tay - AI: YOLOv8</div>
 </div></body></html>"""
     return HTMLResponse(content=html)
 
