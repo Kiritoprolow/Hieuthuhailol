@@ -94,25 +94,37 @@ def send_telegram_alert(jpeg_bytes: bytes, caption: str):
 def detect_faces_via_hf(jpeg_bytes: bytes):
     """
     Gui anh sang Hugging Face Space (YOLOv8) de detect mat.
-    Tra ve so luong mat phat hien duoc. Neu Space loi/timeout, tra ve 0
-    (khong lam crash request chinh).
+    Thu ca 4 huong xoay (0/90/180/270 do) vi camera co the lap nghieng/xoay.
+    Tra ve (face_count, rotation_used) cua huong dau tien phat hien duoc mat,
+    hoac (0, 0) neu khong huong nao thay mat.
     """
     try:
         img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
-        tmp_path = "/tmp/_frame.jpg"
-        img.save(tmp_path, "JPEG")
-
-        client = get_hf_client()
-        result = client.predict(
-            image=handle_file(tmp_path),
-            api_name="/predict",
-        )
-        # result la dict: {"face_count": N, "boxes": [...]}
-        face_count = result.get("face_count", 0) if isinstance(result, dict) else 0
-        return face_count
     except Exception as e:
-        print(f"Loi goi Hugging Face Space: {e}")
-        return 0
+        print(f"Loi doc anh: {e}")
+        return 0, 0
+
+    client = get_hf_client()
+
+    for rotation in (0, 90, 180, 270):
+        try:
+            rotated = img.rotate(-rotation, expand=True) if rotation != 0 else img
+            tmp_path = f"/tmp/_frame_{rotation}.jpg"
+            rotated.save(tmp_path, "JPEG")
+
+            result = client.predict(
+                image=handle_file(tmp_path),
+                api_name="/predict",
+            )
+            face_count = result.get("face_count", 0) if isinstance(result, dict) else 0
+
+            if face_count > 0:
+                return face_count, rotation
+        except Exception as e:
+            print(f"Loi goi Hugging Face Space (rotation {rotation}): {e}")
+            continue
+
+    return 0, 0
 
 
 @app.post("/upload")
@@ -127,11 +139,15 @@ async def upload_image(request: Request):
         state["last_image"] = body
         state["last_image_time"] = now_str
 
-    face_count = detect_faces_via_hf(body)
+    face_count, rotation_used = detect_faces_via_hf(body)
 
     alert_sent = False
     if face_count > 0:
-        caption = f"\U0001F6A8 Phat hien {face_count} nguoi trong vuon sau rieng!\n\U0001F550 {now_str}"
+        caption = (
+            f"\U0001F6A8 Phat hien {face_count} nguoi trong vuon sau rieng!\n"
+            f"\U0001F550 {now_str}\n"
+            f"(Goc xoay nhan dien: {rotation_used}\u00b0)"
+        )
         send_telegram_alert(body, caption)
         alert_sent = True
 
@@ -141,7 +157,7 @@ async def upload_image(request: Request):
             state["history"].insert(0, {"time": now_str, "faces": face_count})
             state["history"] = state["history"][:MAX_HISTORY]
 
-    return {"status": "ok", "faces_detected": face_count, "alert_sent": alert_sent}
+    return {"status": "ok", "faces_detected": face_count, "rotation_used": rotation_used, "alert_sent": alert_sent}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -219,3 +235,4 @@ async def latest_image():
     if not img:
         return Response(content="no image", status_code=404)
     return Response(content=img, media_type="image/jpeg")
+            
