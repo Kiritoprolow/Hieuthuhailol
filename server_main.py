@@ -18,6 +18,23 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
+# ---- Tu ping de chong Render free tier ngu (sleep sau ~15 phut khong traffic) ----
+SELF_URL = os.environ.get("SELF_URL", "https://hieuthuhailol.onrender.com")
+PING_INTERVAL_SECONDS = 5 * 60  # 5 phut
+
+
+def self_ping_loop():
+    while True:
+        time.sleep(PING_INTERVAL_SECONDS)
+        try:
+            resp = requests.get(SELF_URL, timeout=10)
+            print(f"[self-ping] {datetime.now()} -> HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"[self-ping] Loi: {e}")
+
+
+threading.Thread(target=self_ping_loop, daemon=True).start()
+
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -185,4 +202,3 @@ async def latest_image():
     if not img:
         return Response(content="no image", status_code=404)
     return Response(content=img, media_type="image/jpeg")
-    
