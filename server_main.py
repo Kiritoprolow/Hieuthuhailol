@@ -112,10 +112,20 @@ def detect_faces_via_hf(jpeg_bytes: bytes):
             tmp_path = f"/tmp/_frame_{rotation}.jpg"
             rotated.save(tmp_path, "JPEG")
 
-            result = client.predict(
-                image=handle_file(tmp_path),
-                api_name="/predict",
-            )
+            result = None
+            last_err = None
+            for try_api_name in ("/predict", "/detect_faces"):
+                try:
+                    result = client.predict(
+                        image=handle_file(tmp_path),
+                        api_name=try_api_name,
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    continue
+            if result is None:
+                raise last_err if last_err else Exception("Khong goi duoc API nao")
             face_count = result.get("face_count", 0) if isinstance(result, dict) else 0
 
             if face_count > 0:
@@ -235,4 +245,4 @@ async def latest_image():
     if not img:
         return Response(content="no image", status_code=404)
     return Response(content=img, media_type="image/jpeg")
-            
+                             
