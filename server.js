@@ -1,29 +1,53 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
+const { GoogleGenAI } = require('@google/genai');
 const app = express();
 
 const BOT_TOKEN = '8838984294:AAGsmgTcS3NyjFBNBrt7lI1ZO-facV0bqR0';
 const CHAT_ID = '6428642807';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_KEY_HERE';
+
 const bot = new TelegramBot(BOT_TOKEN);
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 let lastImage = null;
 let lastTime = null;
 let imageCount = 0;
+let personDetections = 0;
 
 app.post('/upload', express.raw({ type: 'image/jpeg', limit: '50kb' }), async (req, res) => {
   if (!req.body || req.body.length === 0) return res.status(400).send('No image');
+
   lastImage = req.body;
   lastTime = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
   imageCount++;
   console.log(`Nhan anh #${imageCount}: ${lastImage.length} bytes luc ${lastTime}`);
   res.send('OK');
+
   try {
-    await bot.sendPhoto(CHAT_ID, lastImage, {
-      caption: `📷 Vuon Sau Rieng\n🕐 ${lastTime}\n📡 ESP32-CAM #${imageCount}`
+    const imageB64 = lastImage.toString('base64');
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.5-flash',
+      input: [
+        { type: 'text', text: 'Co nguoi trong anh nay khong? Chi tra loi CO hoac KHONG, khong giai thich them.' },
+        { type: 'image', data: imageB64, mime_type: 'image/jpeg' }
+      ]
     });
-    console.log('Telegram OK!');
+
+    const answer = interaction.output_text.trim().toUpperCase();
+    console.log('Gemini tra loi:', answer);
+
+    if (answer.includes('CO')) {
+      personDetections++;
+      await bot.sendPhoto(CHAT_ID, lastImage, {
+        caption: `🚨 PHAT HIEN NGUOI!\n📷 Vuon Sau Rieng\n🕐 ${lastTime}\n📡 Anh #${imageCount}`
+      });
+      console.log('Telegram OK - co nguoi!');
+    } else {
+      console.log('Khong co nguoi, bo qua Telegram.');
+    }
   } catch (e) {
-    console.log('Telegram LOI:', e.message);
+    console.log('LOI Gemini/Telegram:', e.message);
   }
 });
 
@@ -69,8 +93,8 @@ app.get('/', (req, res) => {
       <div class="card-value">${imageCount}</div>
     </div>
     <div class="card">
-      <div class="card-title">Cap nhat cuoi</div>
-      <div class="card-value" style="font-size:12px">${lastTime || 'Chua co'}</div>
+      <div class="card-title">Phat hien nguoi</div>
+      <div class="card-value">${personDetections}</div>
     </div>
   </div>
   <div class="footer">Tu dong cap nhat 5 giay mot lan</div>
